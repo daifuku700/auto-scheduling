@@ -1,4 +1,4 @@
-import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from "@google/generative-ai";
+import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold, Part } from "@google/generative-ai";
 
 // Gemini APIクライアントを初期化
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
@@ -12,50 +12,43 @@ export interface ScheduleItem {
   isAllDay?: boolean;
 }
 
-export async function extractSchedules(text: string): Promise<ScheduleItem[]> {
+interface ImageData {
+  mimeType: string;
+  base64: string;
+}
+
+export async function extractSchedules(
+  text?: string,
+  imageData?: ImageData
+): Promise<ScheduleItem[]> {
   if (!process.env.GEMINI_API_KEY) {
     console.error("Gemini API キーが設定されていません");
     throw new Error("API configuration error: Missing Gemini API key");
   }
+  if (!text && !imageData) {
+    throw new Error("テキストまたは画像のいずれかが必要です");
+  }
 
   try {
-    // 最新のモデル名を使用 - バージョン指定を変更
-    // 'gemini-pro'ではなく'gemini-1.5-flash'などの最新モデルに変更
-    // まずはAPIで利用可能なモデルを確認
-    const modelName = "gemini-1.5-flash"; // 最新の安定版モデル名
+    const modelName = "gemini-1.5-flash"; // マルチモーダル対応モデル
     console.log(`Gemini APIを使用: モデル=${modelName}`);
 
-    // モデルの取得と設定
     const model = genAI.getGenerativeModel({
       model: modelName,
-      // セーフティ設定を追加
       safetySettings: [
-        {
-          category: HarmCategory.HARM_CATEGORY_HARASSMENT,
-          threshold: HarmBlockThreshold.BLOCK_NONE,
-        },
-        {
-          category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-          threshold: HarmBlockThreshold.BLOCK_NONE,
-        },
-        {
-          category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-          threshold: HarmBlockThreshold.BLOCK_NONE,
-        },
-        {
-          category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-          threshold: HarmBlockThreshold.BLOCK_NONE,
-        },
+        { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+        { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
+        { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+        { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
       ],
       generationConfig: {
-        temperature: 0.2,  // より確定的な応答
+        temperature: 0.2,
         topK: 40,
         topP: 0.95,
         maxOutputTokens: 8192,
       }
     });
 
-    // 現在の日時とタイムゾーン情報を取得
     const now = new Date();
     const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
     const currentDateTimeISO = now.toISOString();
@@ -69,15 +62,12 @@ export async function extractSchedules(text: string): Promise<ScheduleItem[]> {
       second: '2-digit',
       hour12: false
     });
+    const japanOffset = 9 * 60;
+    const currentOffset = -now.getTimezoneOffset();
+    const offsetDifference = japanOffset - currentOffset;
 
-    // 日本のタイムゾーンオフセットを取得（分単位）
-    const japanOffset = 9 * 60; // JST: UTC+9
-    const currentOffset = -now.getTimezoneOffset(); // 分単位でのオフセット（負の値なので反転）
-    const offsetDifference = japanOffset - currentOffset; // 日本時間との差（分）
-
-    // プロンプトを作成
-    const prompt = `
-以下のテキストから予定やタスクを抽出し、JSONフォーマットで返してください。
+    const promptText = `
+以下の入力（テキストまたは画像）から予定やタスクを抽出し、JSONフォーマットで返してください。
 
 現在の日時情報:
 - 現在時刻（ISO）: ${currentDateTimeISO}
@@ -85,12 +75,7 @@ export async function extractSchedules(text: string): Promise<ScheduleItem[]> {
 - タイムゾーン: ${timeZone}
 - 日本時間との差: ${offsetDifference >= 0 ? '+' : '-'}${Math.abs(Math.floor(offsetDifference / 60))}時間${Math.abs(offsetDifference % 60)}分
 
-入力テキスト:
-"""
-${text}
-"""
-
-以下の条件に従って抽出してください:
+抽出条件:
 1. 日時情報があれば、ISO 8601フォーマット (YYYY-MM-DDThh:mm:ss+09:00) に変換してください。時間帯は日本時間 (JST) です。
 2. 時間の記載がなければ、isAllDay を true にしてください。
 3. 予定の日時が特定できる場合は startDateTime に、締め切りの場合は dueDate に設定してください。
@@ -98,7 +83,7 @@ ${text}
 5. 具体的な日時情報がないものは抽出しないでください。
 6. "今日", "明日", "昨日", "今週", "来週", "先週", "今月", "来月", "先月"などの相対的な日時表現は、現在日時（${currentDateTimeLocal}）を基準に適切な日時に変換してください。
 
-出力形式:
+出力形式（JSON配列）:
 [
   {
     "title": "予定のタイトル",
@@ -111,17 +96,24 @@ ${text}
   ...
 ]
 
-空の配列 [] が返る場合は、予定やタスクが見つからなかったことを意味します。
-必ず有効なJSONフォーマットで返してください。
-レスポンスは必ず一行に一つのJSONオブジェクトを持つ配列としてください。
+予定やタスクが見つからない場合は、空の配列 [] を返してください。
 `;
 
-    try {
-      // エラーハンドリングを強化
-      console.log("Gemini API へのリクエスト開始");
+    const parts: Part[] = [{ text: promptText }];
+    if (imageData) {
+      parts.push({
+        inlineData: {
+          mimeType: imageData.mimeType,
+          data: imageData.base64,
+        },
+      });
+    } else if (text) {
+      parts[0].text += `\n\n入力テキスト:\n"""\n${text}\n"""`;
+    }
 
-      // Gemini APIを呼び出し
-      const result = await model.generateContent(prompt);
+    try {
+      console.log("Gemini API へのリクエスト開始");
+      const result = await model.generateContent({ contents: [{ role: "user", parts }] });
       console.log("Gemini API からの応答を受信");
 
       const response = await result.response;
@@ -129,44 +121,26 @@ ${text}
 
       console.log("Gemini APIからの応答テキスト:", responseText.substring(0, 100) + "...");
 
-      // 空の応答をチェック
       if (!responseText || responseText.trim() === '') {
         console.warn("Gemini APIからの応答が空です");
         return [];
       }
 
-      // JSON文字列を抽出（マークダウンコードブロックから取り出す処理も含む）
-      let jsonStr = responseText;
-
-      // コードブロックを検出して取り除く
-      const codeBlockMatch = responseText.match(/```(?:json)?([\s\S]*?)```/);
-      if (codeBlockMatch) {
-        jsonStr = codeBlockMatch[1].trim();
-      }
-      // 配列表記の場合の処理
-      else {
-        const arrayMatch = responseText.match(/\[([\s\S]*)\]/);
-        if (arrayMatch) {
-          jsonStr = `[${arrayMatch[1]}]`;
-        }
-      }
-
       try {
-        // JSON文字列をパースし、ScheduleItem[]型に変換
-        console.log("JSONの解析を試行:", jsonStr.substring(0, 100) + "...");
+        // マークダウンのコードブロック記号を削除
+        const cleanedText = responseText.replace(/```json|```/g, '').trim();
+        console.log("整形後のJSONテキスト:", cleanedText.substring(0, 100) + "...");
 
-        // 特殊なJSON文字列のクリーンアップ
-        const cleanJsonStr = jsonStr
-          .replace(/```json|```/g, '').trim();
-        const parsedData = JSON.parse(cleanJsonStr);
+        const parsedData = JSON.parse(cleanedText);
 
-        // 配列でなければ空配列を返す
         if (!Array.isArray(parsedData)) {
           console.warn("APIレスポンスが配列でありません:", parsedData);
+          if (typeof parsedData === 'object' && parsedData !== null && 'title' in parsedData) {
+            return [parsedData as ScheduleItem];
+          }
           return [];
         }
 
-        // 各項目が必要なプロパティを持っているか検証
         const validSchedules = parsedData.filter(item => {
           return item && typeof item === 'object' && 'title' in item;
         });
@@ -174,8 +148,28 @@ ${text}
         return validSchedules as ScheduleItem[];
       } catch (jsonError) {
         console.error("JSON解析エラー:", jsonError);
-        console.error("API応答テキスト:", text);
-        console.error("抽出されたJSON文字列:", jsonStr);
+        console.error("API応答テキスト:", responseText);
+
+        // エラーが発生した場合、さらに別の方法で抽出を試みる
+        try {
+          // JSONらしき部分を正規表現で抽出
+          const jsonMatch = responseText.match(/\[\s*\{[\s\S]*\}\s*\]/);
+          if (jsonMatch) {
+            const extractedJson = jsonMatch[0];
+            console.log("正規表現で抽出したJSON:", extractedJson.substring(0, 100) + "...");
+            const secondTryData = JSON.parse(extractedJson);
+
+            if (Array.isArray(secondTryData)) {
+              const validSchedules = secondTryData.filter(item => {
+                return item && typeof item === 'object' && 'title' in item;
+              });
+              return validSchedules as ScheduleItem[];
+            }
+          }
+        } catch (e) {
+          console.error("二次的なJSON抽出も失敗:", e);
+        }
+
         return [];
       }
     } catch (error) {
