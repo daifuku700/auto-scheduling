@@ -11,9 +11,8 @@ const nextConfig: NextConfig = {
       },
     ],
   },
-  // APIのタイムアウト設定を増加
+  // API関連の設定のみ残す
   experimental: {
-    serverComponentsExternalPackages: [],
     serverActions: {
       bodySizeLimit: '2mb', // APIリクエスト本文のサイズ制限を増やす
     },
