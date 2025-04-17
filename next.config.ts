@@ -17,6 +17,10 @@ const nextConfig: NextConfig = {
       bodySizeLimit: '2mb', // APIリクエスト本文のサイズ制限を増やす
     },
   },
+  // ベースパス設定を追加
+  basePath: '/auto-schedule',
+  // 本番環境の設定
+  output: 'standalone', // 依存関係を含めたスタンドアロンビルドを生成
 };
 
 export default nextConfig;

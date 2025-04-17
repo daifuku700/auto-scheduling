@@ -99,6 +99,83 @@ bun dev
 
 ブラウザで [http://localhost:3000](http://localhost:3000) を開いて利用できます。
 
+## 本番環境へのデプロイ
+
+### Ubuntu Server + Apache2 へのデプロイ
+
+#### 前提条件
+- Ubuntu Server (推奨: 20.04 LTS 以降)
+- Apache2
+- Node.js 18.x 以上
+- npm または yarn
+- PM2 (Node.jsアプリケーション管理用)
+
+#### デプロイ手順
+
+1. **リポジトリのクローン**
+   ```bash
+   git clone <リポジトリURL>
+   cd auto-scheduling
+   ```
+
+2. **環境変数の設定**
+   - `.env.local.example` をコピーして `.env.local` を作成
+   - 必要な環境変数を設定（Google API キーなど）
+
+3. **Makefileを使ったデプロイ**
+
+   すべてのセットアップとデプロイを自動で行う場合:
+   ```bash
+   sudo make all
+   ```
+
+   または個別のステップを実行:
+   ```bash
+   # サーバーの依存関係をインストール
+   sudo make setup-server
+
+   # Node.js の依存関係をインストール
+   make install-deps
+
+   # アプリケーションのビルド
+   make build
+
+   # Apacheの設定
+   sudo make setup-apache
+
+   # Apache設定の有効化
+   sudo make enable-apache
+
+   # デプロイ
+   sudo make deploy
+   ```
+
+4. **アクセス**
+   - デプロイ完了後、`http://サーバーのIPまたはドメイン名/auto-schedule` でアクセス可能です。
+
+#### トラブルシューティング
+
+- **Apache エラーログの確認**
+  ```bash
+  sudo tail -f /var/log/apache2/auto-schedule-error.log
+  ```
+
+- **PM2 プロセスの確認**
+  ```bash
+  pm2 list
+  pm2 logs auto-schedule
+  ```
+
+- **Next.jsアプリの再起動**
+  ```bash
+  sudo systemctl restart pm2-auto-schedule
+  ```
+
+- **Apache の再起動**
+  ```bash
+  sudo systemctl restart apache2
+  ```
+
 ## 技術スタック
 
 - Next.js 15
